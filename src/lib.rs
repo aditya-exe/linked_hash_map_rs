@@ -1,4 +1,7 @@
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::{
+    borrow::Borrow,
+    hash::{DefaultHasher, Hash, Hasher},
+};
 
 const INITIAL_NBUCKETS: usize = 1;
 
@@ -38,15 +41,50 @@ where
         None
     }
 
-    pub fn get(&self, key: &K) -> Option<&V> {
+    pub fn contains_key<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        self.get(key.borrow()).is_some()
+    }
+
+    pub fn get<Q>(&self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let bucket_idx = self.get_bucket(key);
         self.buckets[bucket_idx]
             .iter()
-            .find(|&(ekey, _)| ekey == key)
+            .find(|&(ekey, _)| ekey.borrow() == key)
             .map(|&(_, ref evalue)| evalue)
     }
 
-    pub fn resize(&mut self) {
+    pub fn remove<Q>(&mut self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let bucket_idx = self.get_bucket(key);
+        let item_idx = self.buckets[bucket_idx]
+            .iter()
+            .position(|&(ref ekey, _)| ekey.borrow() == key)?;
+
+        self.items -= 1;
+
+        Some(self.buckets[bucket_idx].swap_remove(item_idx).1)
+    }
+
+    pub fn len(&self) -> usize {
+        self.items
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items == 0
+    }
+
+    fn resize(&mut self) {
         let target_size = match self.buckets.len() {
             0 => INITIAL_NBUCKETS,
             n => 2 * n,
@@ -66,11 +104,58 @@ where
         let _ = std::mem::replace(&mut self.buckets, new_buckets);
     }
 
-    fn get_bucket(&self, key: &K) -> usize {
+    fn get_bucket<Q>(&self, key: &Q) -> usize
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let mut hasher = DefaultHasher::new();
         key.hash(&mut hasher);
 
         (hasher.finish() % self.buckets.len() as u64) as usize
+    }
+}
+
+pub struct Iter<'a, K: 'a, V: 'a> {
+    map: &'a LinkedHashMap<K, V>,
+    bucket: usize,
+    at: usize,
+}
+
+impl<'a, K, V> Iterator for Iter<'a, K, V> {
+    type Item = (&'a K, &'a V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.map.buckets.get(self.at) {
+                Some(bucket) => match bucket.get(self.at) {
+                    Some(&(ref k, ref v)) => {
+                        self.at += 1;
+                        break Some((k, v));
+                    }
+                    None => {
+                        self.bucket += 1;
+                        self.at = 0;
+
+                        continue;
+                    }
+                },
+                None => break None,
+            }
+        }
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a LinkedHashMap<K, V> {
+    type Item = (&'a K, &'a V);
+    type IntoIter = Iter<'a, K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Iter {
+            map: self,
+            bucket: 0,
+            at: 0,
+        }
     }
 }
 
@@ -82,6 +167,8 @@ mod tests {
     fn insert_test() {
         let mut map = LinkedHashMap::new();
         map.insert("abc", 123);
+
+        assert_eq!(map.len(), 1);
     }
 
     #[test]
@@ -90,5 +177,17 @@ mod tests {
         map.insert("abc", 123);
 
         assert_eq!(map.get(&"abc"), Some(&123));
+    }
+
+    #[test]
+    fn remove_test() {
+        let mut map = LinkedHashMap::new();
+        map.insert("abc", 123);
+
+        assert_eq!(map.len(), 1);
+
+        map.remove(&"abc");
+
+        assert_eq!(map.len(), 0);
     }
 }
